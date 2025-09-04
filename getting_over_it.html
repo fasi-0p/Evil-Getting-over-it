@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Getting Over It - Browser Edition</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #87CEEB, #98FB98);
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #gameCanvas {
+            border: 2px solid #333;
+            background: linear-gradient(to bottom, #87CEEB 0%, #98FB98 50%, #8B4513 100%);
+            display: block;
+            margin: 0 auto;
+            cursor: crosshair;
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-size: 18px;
+            font-weight: bold;
+            z-index: 100;
+        }
+
+        #instructions {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: #333;
+            font-size: 12px;
+            max-width: 200px;
+            text-align: right;
+        }
+
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            z-index: 200;
+        }
+
+        button {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+        }
+
+        button:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="1000" height="700"></canvas>
+    
+    <div id="ui">
+        <div>Height: <span id="height">0</span>m</div>
+        <div>Best: <span id="bestHeight">0</span>m</div>
+        <div>Falls: <span id="falls">0</span></div>
+    </div>
+
+    <div id="instructions">
+        <strong>Controls:</strong><br>
+        Click and drag to swing your hammer<br>
+        Hook onto surfaces to climb<br>
+        <em>Warning: This game is extremely difficult!</em>
+    </div>
+
+    <div id="gameOver">
+        <h2>You Fell!</h2>
+        <p>Sometimes life is just pain...</p>
+        <p>Height reached: <span id="finalHeight"></span>m</p>
+        <button onclick="resetGame()">Try Again</button>
+    </div>
+
+    <script>
+        // Game variables
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        let mouse = { x: 0, y: 0, down: false, prevX: 0, prevY: 0 };
+        let gameState = 'playing';
+        let falls = 0;
+        let bestHeight = localStorage.getItem('bestHeight') || 0;
+
+        // Physics constants
+        const GRAVITY = 0.3;
+        const FRICTION = 0.95;
+        const HAMMER_LENGTH = 90;
+        const MAX_VELOCITY = 15;
+
+        // Player object
+        const player = {
+            x: 100,
+            y: 600,
+            vx: 0,
+            vy: 0,
+            radius: 15,
+            grounded: false,
+            hammerAngle: 0,
+            hammerTip: { x: 0, y: 0 },
+            hookedTo: null,
+            color: '#8B4513'
+        };
+
+        // Obstacles array
+        const obstacles = [
+            // Starting platform
+            { x: 50, y: 650, width: 200, height: 50, type: 'normal' },
+            
+            // First section - basic platforms
+            { x: 300, y: 600, width: 80, height: 20, type: 'normal' },
+            { x: 420, y: 550, width: 60, height: 20, type: 'slippery' },
+            { x: 520, y: 500, width: 40, height: 20, type: 'normal' },
+            
+            // Narrow bridges
+            { x: 600, y: 450, width: 100, height: 15, type: 'normal' },
+            { x: 750, y: 400, width: 80, height: 15, type: 'crumbling' },
+            
+            // Spike traps
+            { x: 200, y: 500, width: 150, height: 20, type: 'spikes' },
+            { x: 400, y: 350, width: 120, height: 20, type: 'spikes' },
+            
+            // Moving platforms (evil surprise #1)
+            { x: 100, y: 300, width: 60, height: 15, type: 'moving', vx: 1, originalX: 100, range: 150 },
+            { x: 700, y: 250, width: 50, height: 15, type: 'moving', vx: -0.8, originalX: 700, range: 100 },
+            
+            // Invisible platforms (evil surprise #2)
+            { x: 300, y: 200, width: 80, height: 15, type: 'invisible', visible: false },
+            { x: 550, y: 150, width: 70, height: 15, type: 'invisible', visible: false },
+            
+            // Ice platforms
+            { x: 150, y: 150, width: 100, height: 20, type: 'ice' },
+            { x: 650, y: 100, width: 90, height: 20, type: 'ice' },
+            
+            // Final platforms
+            { x: 350, y: 50, width: 60, height: 15, type: 'normal' },
+            { x: 450, y: 20, width: 50, height: 15, type: 'goal' },
+        ];
+
+        // Initialize canvas size
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        // Set initial canvas size and handle resize
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Initialize best height display
+        document.getElementById('bestHeight').textContent = bestHeight;
+
+        // Event listeners
+        canvas.addEventListener('mousedown', handleMouseDown);
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('mouseup', handleMouseUp);
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        function handleMouseDown(e) {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            mouse.down = true;
+            mouse.prevX = mouse.x;
+            mouse.prevY = mouse.y;
+        }
+
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            mouse.prevX = mouse.x;
+            mouse.prevY = mouse.y;
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        }
+
+        function handleMouseUp() {
+            mouse.down = false;
+            player.hookedTo = null;
+        }
+
+        function updatePhysics() {
+            if (gameState !== 'playing') return;
+
+            // Update hammer position and angle
+            const dx = mouse.x - player.x;
+            const dy = mouse.y - player.y;
+            player.hammerAngle = Math.atan2(dy, dx);
+            
+            player.hammerTip.x = player.x + Math.cos(player.hammerAngle) * HAMMER_LENGTH;
+            player.hammerTip.y = player.y + Math.sin(player.hammerAngle) * HAMMER_LENGTH;
+
+            // Handle hammer physics
+            if (mouse.down) {
+                // Check if hammer tip collides with any obstacle
+                let collision = checkHammerCollision();
+                
+                if (collision && !player.hookedTo) {
+                    player.hookedTo = collision;
+                }
+                
+                if (player.hookedTo) {
+                    // Apply swing force
+                    const mouseDx = mouse.x - mouse.prevX;
+                    const mouseDy = mouse.y - mouse.prevY;
+                    
+                    const swingForce = 0.3;
+                    player.vx += mouseDx * swingForce;
+                    player.vy += mouseDy * swingForce;
+                    
+                    // Constraint to hook point
+                    const hookDx = player.hookedTo.x - player.x;
+                    const hookDy = player.hookedTo.y - player.y;
+                    const hookDistance = Math.sqrt(hookDx * hookDx + hookDy * hookDy);
+                    
+                    if (hookDistance > HAMMER_LENGTH) {
+                        const constraint = 0.1;
+                        player.vx += hookDx * constraint;
+                        player.vy += hookDy * constraint;
+                    }
+                }
+            } else {
+                player.hookedTo = null;
+            }
+
+            // Apply gravity
+            player.vy += GRAVITY;
+            
+            // Apply velocity limits
+            player.vx = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, player.vx));
+            player.vy = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, player.vy));
+
+            // Update position
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Ground collision and platform collision
+            player.grounded = false;
+            
+            obstacles.forEach(obstacle => {
+                if (obstacle.type === 'invisible' && !obstacle.visible) {
+                    // Make invisible platforms visible when player gets close
+                    const distance = Math.sqrt((player.x - obstacle.x) * (player.x - obstacle.x) + 
+                                             (player.y - obstacle.y) * (player.y - obstacle.y));
+                    if (distance < 50) {
+                        obstacle.visible = true;
+                    }
+                }
+                
+                if (checkPlayerCollision(obstacle)) {
+                    handlePlatformCollision(obstacle);
+                }
+                
+                // Update moving platforms
+                if (obstacle.type === 'moving') {
+                    obstacle.x += obstacle.vx;
+                    if (obstacle.x <= obstacle.originalX - obstacle.range || 
+                        obstacle.x >= obstacle.originalX + obstacle.range) {
+                        obstacle.vx *= -1;
+                    }
+                }
+            });
+
+            // Apply friction
+            if (player.grounded) {
+                player.vx *= FRICTION;
+            }
+
+            // Check for falling off the world
+            if (player.y > canvas.height + 100) {
+                gameOver();
+            }
+
+            // Update height counter
+            const height = Math.max(0, Math.floor((canvas.height - player.y) / 10));
+            document.getElementById('height').textContent = height;
+            
+            if (height > bestHeight) {
+                bestHeight = height;
+                document.getElementById('bestHeight').textContent = bestHeight;
+                localStorage.setItem('bestHeight', bestHeight);
+            }
+        }
+
+        function checkHammerCollision() {
+            for (let obstacle of obstacles) {
+                if (obstacle.type === 'invisible' && !obstacle.visible) continue;
+                
+                if (player.hammerTip.x >= obstacle.x && 
+                    player.hammerTip.x <= obstacle.x + obstacle.width &&
+                    player.hammerTip.y >= obstacle.y && 
+                    player.hammerTip.y <= obstacle.y + obstacle.height) {
+                    return { x: player.hammerTip.x, y: obstacle.y };
+                }
+            }
+            return null;
+        }
+
+        function checkPlayerCollision(obstacle) {
+            if (obstacle.type === 'invisible' && !obstacle.visible) return false;
+            
+            return player.x + player.radius > obstacle.x && 
+                   player.x - player.radius < obstacle.x + obstacle.width &&
+                   player.y + player.radius > obstacle.y && 
+                   player.y - player.radius < obstacle.y + obstacle.height;
+        }
+
+        function handlePlatformCollision(obstacle) {
+            const playerBottom = player.y + player.radius;
+            const playerTop = player.y - player.radius;
+            const playerRight = player.x + player.radius;
+            const playerLeft = player.x - player.radius;
+
+            // Landing on top of platform
+            if (player.vy > 0 && playerBottom > obstacle.y && playerTop < obstacle.y) {
+                player.y = obstacle.y - player.radius;
+                
+                // Platform-specific effects
+                switch (obstacle.type) {
+                    case 'spikes':
+                        // Spikes cause massive knockback
+                        player.vy = -8;
+                        player.vx += (Math.random() - 0.5) * 6;
+                        break;
+                    case 'slippery':
+                    case 'ice':
+                        player.vy = 0;
+                        player.vx *= 0.99; // Very slippery
+                        break;
+                    case 'crumbling':
+                        // Platform disappears after a delay
+                        setTimeout(() => {
+                            const index = obstacles.indexOf(obstacle);
+                            if (index > -1) obstacles.splice(index, 1);
+                        }, 500);
+                        player.vy = 0;
+                        break;
+                    case 'goal':
+                        alert('Congratulations! You reached the top!');
+                        resetGame();
+                        return;
+                    default:
+                        player.vy = 0;
+                        player.vx *= FRICTION;
+                }
+                
+                player.grounded = true;
+            }
+            // Hitting from the sides or bottom
+            else {
+                if (playerRight > obstacle.x && playerLeft < obstacle.x) {
+                    player.x = obstacle.x - player.radius;
+                    player.vx = Math.abs(player.vx) * -0.5;
+                } else if (playerLeft < obstacle.x + obstacle.width && playerRight > obstacle.x + obstacle.width) {
+                    player.x = obstacle.x + obstacle.width + player.radius;
+                    player.vx = Math.abs(player.vx) * 0.5;
+                }
+            }
+        }
+
+        function render() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw obstacles
+            obstacles.forEach(obstacle => {
+                if (obstacle.type === 'invisible' && !obstacle.visible) return;
+                
+                ctx.save();
+                
+                switch (obstacle.type) {
+                    case 'spikes':
+                        ctx.fillStyle = '#FF4500';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        // Draw spikes
+                        ctx.fillStyle = '#FF0000';
+                        for (let i = 0; i < obstacle.width; i += 10) {
+                            ctx.beginPath();
+                            ctx.moveTo(obstacle.x + i, obstacle.y);
+                            ctx.lineTo(obstacle.x + i + 5, obstacle.y - 10);
+                            ctx.lineTo(obstacle.x + i + 10, obstacle.y);
+                            ctx.fill();
+                        }
+                        break;
+                    case 'slippery':
+                        ctx.fillStyle = '#4169E1';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        break;
+                    case 'ice':
+                        ctx.fillStyle = '#E0FFFF';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        ctx.strokeStyle = '#B0E0E6';
+                        ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        break;
+                    case 'moving':
+                        ctx.fillStyle = '#9400D3';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        break;
+                    case 'crumbling':
+                        ctx.fillStyle = '#A0522D';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        // Add cracks
+                        ctx.strokeStyle = '#654321';
+                        ctx.beginPath();
+                        ctx.moveTo(obstacle.x + 5, obstacle.y);
+                        ctx.lineTo(obstacle.x + 5, obstacle.y + obstacle.height);
+                        ctx.moveTo(obstacle.x + obstacle.width - 5, obstacle.y);
+                        ctx.lineTo(obstacle.x + obstacle.width - 5, obstacle.y + obstacle.height);
+                        ctx.stroke();
+                        break;
+                    case 'invisible':
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                        ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        break;
+                    case 'goal':
+                        ctx.fillStyle = '#FFD700';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        ctx.fillStyle = '#FF1493';
+                        ctx.font = '12px Arial';
+                        ctx.fillText('GOAL!', obstacle.x + 5, obstacle.y + 10);
+                        break;
+                    default:
+                        ctx.fillStyle = '#8B4513';
+                        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                }
+                
+                ctx.restore();
+            });
+
+            // Draw player
+            ctx.fillStyle = player.color;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw simple face
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(player.x - 5, player.y - 5, 2, 0, Math.PI * 2);
+            ctx.arc(player.x + 5, player.y - 5, 2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw mouth (expression changes based on velocity)
+            ctx.beginPath();
+            if (player.vy > 5) {
+                // Scared face when falling fast
+                ctx.arc(player.x, player.y + 2, 3, 0, Math.PI);
+            } else {
+                ctx.arc(player.x, player.y + 2, 3, Math.PI, Math.PI * 2);
+            }
+            ctx.stroke();
+
+            // Draw hammer
+            ctx.strokeStyle = '#654321';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(player.hammerTip.x, player.hammerTip.y);
+            ctx.stroke();
+            
+            // Draw hammer head
+            ctx.fillStyle = '#2F4F4F';
+            ctx.fillRect(player.hammerTip.x - 5, player.hammerTip.y - 8, 10, 16);
+            
+            // Draw hook line if connected
+            if (player.hookedTo) {
+                ctx.strokeStyle = '#FF6347';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(player.x, player.y);
+                ctx.lineTo(player.hookedTo.x, player.hookedTo.y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        function gameOver() {
+            gameState = 'gameOver';
+            falls++;
+            document.getElementById('falls').textContent = falls;
+            document.getElementById('finalHeight').textContent = 
+                Math.floor((canvas.height - player.y) / 10);
+            document.getElementById('gameOver').style.display = 'block';
+        }
+
+        function resetGame() {
+            gameState = 'playing';
+            player.x = 100;
+            player.y = 600;
+            player.vx = 0;
+            player.vy = 0;
+            player.grounded = false;
+            player.hookedTo = null;
+            
+            // Reset any removed obstacles
+            if (obstacles.length < 16) {
+                location.reload(); // Simple way to reset everything
+            }
+            
+            document.getElementById('gameOver').style.display = 'none';
+        }
+
+        function gameLoop() {
+            updatePhysics();
+            render();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game
+        gameLoop();
+    </script>
+</body>
+</html>
